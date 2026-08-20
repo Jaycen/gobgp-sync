@@ -57,7 +57,10 @@ async fn main() -> anyhow::Result<()> {
         settings.gobgp_nexthop_ipv4,
         settings.gobgp_nexthop_ipv6
     );
-    log::info!("community_asn: {} (format ASN:ISO3166-numeric)", settings.community_asn);
+    log::info!(
+        "community_asn: {} (format ASN:ISO3166-numeric)",
+        settings.community_asn
+    );
     log::info!(
         "geo_urls: ipv4={} ipv6={}",
         settings

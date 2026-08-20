@@ -4,10 +4,10 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use hickory_resolver::TokioResolver;
 use hickory_resolver::config::{NameServerConfig, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RecordType;
+use hickory_resolver::TokioResolver;
 
 use crate::config::{IpVersion, Settings};
 use crate::models::geo::PrefixExtractor;

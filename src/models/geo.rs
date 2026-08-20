@@ -6,7 +6,12 @@ use chrono::{Local, NaiveDate};
 
 use crate::config::{IpVersion, Settings};
 
-// 下载 user-country CIDR CSV；任一失败则本轮失败并保留旧快照
+struct GeoCacheMeta {
+    date: NaiveDate,
+    url: String,
+}
+
+// 下载国家 CIDR CSV；任一失败则本轮失败并保留旧快照
 pub struct GeoDataFetcher {
     retry: u32,
     timeout: u64,
@@ -81,7 +86,7 @@ impl GeoDataFetcher {
         Self::geo_cache_dir(settings).join("manifest")
     }
 
-    fn load_manifest(settings: &Settings) -> HashMap<String, NaiveDate> {
+    fn load_manifest(settings: &Settings) -> HashMap<String, GeoCacheMeta> {
         let Ok(text) = std::fs::read_to_string(Self::manifest_path(settings)) else {
             return HashMap::new();
         };
@@ -90,12 +95,13 @@ impl GeoDataFetcher {
                 let mut parts = line.split_whitespace();
                 let name = parts.next()?.to_string();
                 let date = NaiveDate::parse_from_str(parts.next()?, "%Y-%m-%d").ok()?;
-                Some((name, date))
+                let url = parts.collect::<Vec<_>>().join(" ");
+                Some((name, GeoCacheMeta { date, url }))
             })
             .collect()
     }
 
-    fn write_manifest(settings: &Settings, entries: &HashMap<String, NaiveDate>) {
+    fn write_manifest(settings: &Settings, entries: &HashMap<String, GeoCacheMeta>) {
         let dir = Self::geo_cache_dir(settings);
         if let Err(e) = std::fs::create_dir_all(&dir) {
             log::warn!("failed to create geo cache dir: {}", e);
@@ -103,7 +109,7 @@ impl GeoDataFetcher {
         }
         let mut lines: Vec<_> = entries
             .iter()
-            .map(|(name, date)| format!("{name} {date}"))
+            .map(|(name, meta)| format!("{name} {} {}", meta.date, meta.url))
             .collect();
         lines.sort();
         if let Err(e) = std::fs::write(Self::manifest_path(settings), lines.join("\n")) {
@@ -113,8 +119,12 @@ impl GeoDataFetcher {
 
     fn load_cached(settings: &Settings, family: &str) -> Option<String> {
         let today = Local::now().date_naive();
-        let fetched = Self::load_manifest(settings).get(family).copied()?;
-        if !settings.sync_schedule.lifecycle_ok(fetched, today) {
+        let meta = Self::load_manifest(settings).remove(family)?;
+        let want = settings.geo_urls.get(family)?;
+        if meta.url != *want {
+            return None;
+        }
+        if !settings.sync_schedule.lifecycle_ok(meta.date, today) {
             return None;
         }
         let path = Self::geo_cache_dir(settings).join(family);
@@ -136,7 +146,13 @@ impl GeoDataFetcher {
             return;
         }
         let mut manifest = Self::load_manifest(settings);
-        manifest.insert(family.to_string(), Local::now().date_naive());
+        manifest.insert(
+            family.to_string(),
+            GeoCacheMeta {
+                date: Local::now().date_naive(),
+                url: settings.geo_urls.get(family).cloned().unwrap_or_default(),
+            },
+        );
         Self::write_manifest(settings, &manifest);
     }
 
@@ -338,5 +354,67 @@ impl PrefixExtractor {
         }
 
         (ipv4_prefixes, ipv6_prefixes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Settings;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gobgp-sync-geo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn geo_cache_misses_when_download_url_changes() {
+        let dir = temp_dir();
+        let mut settings = Settings::for_test(&dir);
+        GeoDataFetcher::save_cached(&settings, "ipv4", "old-user-country");
+
+        settings.geo_urls.insert(
+            "ipv4".to_string(),
+            "https://github.com/sapics/ip-location-db/releases/download/latest/geolite2-country-ipv4-cidr.csv"
+                .to_string(),
+        );
+        assert_eq!(GeoDataFetcher::load_cached(&settings, "ipv4"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn geo_cache_hits_when_url_unchanged() {
+        let dir = temp_dir();
+        let settings = Settings::for_test(&dir);
+        GeoDataFetcher::save_cached(&settings, "ipv4", "cached-cidr");
+        assert_eq!(
+            GeoDataFetcher::load_cached(&settings, "ipv4").as_deref(),
+            Some("cached-cidr")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn geo_cache_misses_legacy_manifest_without_url() {
+        let dir = temp_dir();
+        let settings = Settings::for_test(&dir);
+        let cache = Path::new(&settings.snapshot_dir).join("geo");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("ipv4"), "legacy-cidr").unwrap();
+        std::fs::write(
+            cache.join("manifest"),
+            format!("ipv4 {}\n", Local::now().date_naive()),
+        )
+        .unwrap();
+        assert_eq!(GeoDataFetcher::load_cached(&settings, "ipv4"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

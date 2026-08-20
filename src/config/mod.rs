@@ -305,10 +305,7 @@ impl Settings {
     fn validate_community_asn(&mut self) {
         let asn = self.community_asn.trim();
         if asn.parse::<u32>().is_err() {
-            log::warn!(
-                "invalid community_asn: {}, using 3166",
-                self.community_asn
-            );
+            log::warn!("invalid community_asn: {}, using 3166", self.community_asn);
             self.community_asn = "3166".to_string();
         } else {
             self.community_asn = asn.to_string();
@@ -522,5 +519,47 @@ impl Settings {
                 .to_string(),
         );
         map
+    }
+}
+
+#[cfg(test)]
+impl Settings {
+    pub(crate) fn for_test(snapshot_dir: impl AsRef<Path>) -> Self {
+        let snapshot_dir = snapshot_dir.as_ref().to_string_lossy().into_owned();
+        let snap = Path::new(&snapshot_dir);
+        Self {
+            ip_version: IpVersion::Ipv4,
+            country_code: "CN,HK".to_string(),
+            sync_time: "1w Mon 03:00".to_string(),
+            sync_schedule: SyncSchedule::parse("1w Mon 03:00"),
+            gobgpd_config: "config/gobgpd.conf".to_string(),
+            gobgp_api_host: "127.0.0.1".to_string(),
+            gobgp_api_port: 50051,
+            gobgp_nexthop_ipv4: "223.5.5.5".to_string(),
+            gobgp_nexthop_ipv6: "2400:3200::1".to_string(),
+            community_nexthop_ipv4: HashMap::new(),
+            community_nexthop_ipv6: HashMap::new(),
+            log_file: "logs/gobgp_sync.log".to_string(),
+            snapshot_dir: snapshot_dir.clone(),
+            snapshot_ipv4_file: snap
+                .join("snapshot_ipv4_routing.prefix")
+                .to_string_lossy()
+                .into_owned(),
+            snapshot_ipv6_file: snap
+                .join("snapshot_ipv6_routing.prefix")
+                .to_string_lossy()
+                .into_owned(),
+            community_asn: "3166".to_string(),
+            concurrency: 100,
+            domains_file: "config/domains.txt".to_string(),
+            dns_interval: "10m".to_string(),
+            dns_interval_secs: 600,
+            dns_servers: Self::default_dns_servers(),
+            snapshot_dns_file: snap
+                .join("snapshot_dns_routing.prefix")
+                .to_string_lossy()
+                .into_owned(),
+            geo_urls: Self::default_geo_urls(),
+        }
     }
 }

@@ -12,7 +12,7 @@ use crate::models::route::RouteManager;
 // 前缀 + 团体字
 type PrefixEntry = Vec<(String, String)>;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FamilyAction {
     Skip,
     Restore,
@@ -24,7 +24,18 @@ struct SnapshotState {
     date: Option<NaiveDate>,
     country_code: String,
     ip_version: IpVersion,
+    geo_ipv4: String,
+    geo_ipv6: String,
     attrs: String,
+}
+
+impl SnapshotState {
+    fn scope_matches(&self, settings: &Settings) -> bool {
+        self.country_code == settings.country_code
+            && self.ip_version == settings.ip_version
+            && self.geo_ipv4 == RouteScheduler::geo_url(settings, "ipv4")
+            && self.geo_ipv6 == RouteScheduler::geo_url(settings, "ipv6")
+    }
 }
 
 // 相对上一版快照的差异
@@ -71,12 +82,18 @@ impl RouteScheduler {
             .join(",")
     }
 
-    // 只决定路由表大小：国家范围和地址族
+    fn geo_url(settings: &Settings, family: &str) -> String {
+        settings.geo_urls.get(family).cloned().unwrap_or_default()
+    }
+
+    // 只决定路由表大小：国家范围、地址族、geo CIDR 数据源
     fn scope_fingerprint(settings: &Settings) -> String {
         format!(
-            "country_code={}\nip_version={}\n",
+            "country_code={}\nip_version={}\ngeo_ipv4={}\ngeo_ipv6={}\n",
             settings.country_code,
-            settings.ip_version.as_str()
+            settings.ip_version.as_str(),
+            Self::geo_url(settings, "ipv4"),
+            Self::geo_url(settings, "ipv6"),
         )
     }
 
@@ -101,6 +118,8 @@ impl RouteScheduler {
         let mut date = None;
         let mut country_code = None;
         let mut ip_version = None;
+        let mut geo_ipv4 = String::new();
+        let mut geo_ipv6 = String::new();
         let mut attrs = String::new();
         for line in text.lines() {
             if let Some(v) = line.strip_prefix("date=") {
@@ -109,6 +128,10 @@ impl RouteScheduler {
                 country_code = Some(v.trim().to_string());
             } else if let Some(v) = line.strip_prefix("ip_version=") {
                 ip_version = Some(IpVersion::from_str(v.trim()));
+            } else if let Some(v) = line.strip_prefix("geo_ipv4=") {
+                geo_ipv4 = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("geo_ipv6=") {
+                geo_ipv6 = v.trim().to_string();
             } else if line.is_empty() {
                 continue;
             } else if line.starts_with("community_asn=")
@@ -123,6 +146,8 @@ impl RouteScheduler {
             date,
             country_code: country_code?,
             ip_version: ip_version?,
+            geo_ipv4,
+            geo_ipv6,
             attrs,
         })
     }
@@ -189,7 +214,7 @@ impl RouteScheduler {
         }
     }
 
-    // country_code / ip_version 变了或周期到了：从 geo CIDR 重筛并下载
+    // country_code / ip_version / geo URL 变了或周期到了：从 geo CIDR 重筛并下载
     // 团体字 / 下一跳变了：沿用 .prefix 前缀，按新配置重写后再存快照
     async fn sync_operation(&self) {
         let start = Instant::now();
@@ -201,9 +226,9 @@ impl RouteScheduler {
             s.date
                 .is_some_and(|d| self.settings.sync_schedule.lifecycle_ok(d, today))
         });
-        let scope_same = state.as_ref().is_some_and(|s| {
-            s.country_code == self.settings.country_code && s.ip_version == self.settings.ip_version
-        });
+        let scope_same = state
+            .as_ref()
+            .is_some_and(|s| s.scope_matches(&self.settings));
         let attrs_same = state
             .as_ref()
             .is_some_and(|s| s.attrs == Self::attr_fingerprint(&self.settings));
@@ -257,17 +282,17 @@ impl RouteScheduler {
         if extract_v4 || extract_v6 {
             if !lifecycle_ok {
                 log::info!(
-                    "snapshot expired, extracting prefixes from user-country ({})",
+                    "snapshot expired, extracting prefixes from geo CIDR ({})",
                     self.settings.country_code
                 );
             } else if !scope_same {
                 log::info!(
-                    "scope changed, extracting prefixes from user-country ({})",
+                    "scope changed, extracting prefixes from geo CIDR ({})",
                     self.settings.country_code
                 );
             } else {
                 log::info!(
-                    "extracting prefixes from user-country ({})",
+                    "extracting prefixes from geo CIDR ({})",
                     self.settings.country_code
                 );
             }
@@ -602,7 +627,10 @@ impl RouteScheduler {
             desired.len()
         );
 
-        let existing_prefixes = match self.route_manager.list_global_prefixes(protocol, &tag).await
+        let existing_prefixes = match self
+            .route_manager
+            .list_global_prefixes(protocol, &tag)
+            .await
         {
             Ok(prefixes) => prefixes,
             Err(e) => {
@@ -832,5 +860,95 @@ impl RouteScheduler {
         Self::store_cached_prefixes(last_prefixes_lock, prefixes, false).await;
 
         (lines.join("\n"), saved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Settings;
+
+    fn temp_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gobgp-sync-sched-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn scope_fingerprint_includes_geo_urls() {
+        let dir = temp_dir();
+        let settings = Settings::for_test(&dir);
+        let fp = RouteScheduler::scope_fingerprint(&settings);
+        assert!(fp.contains(&format!(
+            "geo_ipv4={}",
+            settings.geo_urls.get("ipv4").unwrap()
+        )));
+        assert!(fp.contains(&format!(
+            "geo_ipv6={}",
+            settings.geo_urls.get("ipv6").unwrap()
+        )));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn geo_url_change_extracts_instead_of_restoring_snapshot() {
+        let dir = temp_dir();
+        let settings = Settings::for_test(&dir);
+        std::fs::write(&settings.snapshot_ipv4_file, "1.2.3.0/24 3166:156\n").unwrap();
+
+        let sched = RouteScheduler::new(settings.clone());
+        sched.write_snapshot_state();
+
+        let mut changed = settings;
+        changed.geo_urls.insert(
+            "ipv4".to_string(),
+            "https://github.com/sapics/ip-location-db/releases/download/latest/geolite2-country-ipv4-cidr.csv"
+                .to_string(),
+        );
+        let sched = RouteScheduler::new(changed);
+        let state = sched.load_snapshot_state().unwrap();
+        let scope_same = state.scope_matches(&sched.settings);
+
+        assert!(!scope_same);
+        assert_eq!(
+            RouteScheduler::family_action(
+                true,
+                &sched.settings.snapshot_ipv4_file,
+                true,
+                scope_same,
+                true,
+            ),
+            FamilyAction::Extract
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn legacy_snapshot_key_without_geo_urls_is_scope_change() {
+        let dir = temp_dir();
+        let settings = Settings::for_test(&dir);
+        std::fs::write(
+            format!("{}/snapshot.key", settings.snapshot_dir),
+            format!(
+                "date={}\ncountry_code={}\nip_version={}\n{}",
+                Local::now().date_naive(),
+                settings.country_code,
+                settings.ip_version.as_str(),
+                RouteScheduler::attr_fingerprint(&settings)
+            ),
+        )
+        .unwrap();
+
+        let sched = RouteScheduler::new(settings);
+        let state = sched.load_snapshot_state().unwrap();
+        assert!(!state.scope_matches(&sched.settings));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
