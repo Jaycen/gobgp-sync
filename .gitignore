@@ -1,0 +1,13 @@
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+/target
+/dist
+/.cache
+.superpowers/
+/logs/
+/snapshot/

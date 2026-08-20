@@ -1,0 +1,24 @@
+[Unit]
+Description=GoBGP Route Sync Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__PREFIX__
+ExecStart=__EXE__ -c config/config.toml --gobgpd-config config/gobgpd.conf
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStop=/bin/kill -TERM $MAINPID
+Restart=on-failure
+RestartSec=10s
+
+NoNewPrivileges=yes
+# PrivateTmp=yes 会把工作目录指到临时空间，快照会写丢
+PrivateTmp=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=gobgp-sync
+
+[Install]
+WantedBy=multi-user.target

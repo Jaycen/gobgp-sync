@@ -1,0 +1,393 @@
+# 全局 BGP 实例，所有邻居共用这些本端参数
+[global.config]
+    as = 1                                          # 本端自治系统号
+    router-id = "1.1.1.1"                           # BGP Router ID，通常用本机 IPv4 地址
+    port = 1790                                     # BGP TCP 监听端口，默认 179，设为 -1 可关闭监听
+    # port = -1
+    local-address-list = ["192.168.10.1", "2001:db8::1"]  # 本机 BGP 监听地址，默认 0.0.0.0 和 ::
+
+    # 全局策略，对所有邻居生效，可被邻居级 apply-policy 覆盖
+    [global.apply-policy.config]
+        import-policy-list = ["policy1"]            # 入向策略列表
+        default-import-policy = "reject-route"      # 未命中入向策略时的默认动作，accept-route 或 reject-route
+        export-policy-list = ["policy2"]            # 出向策略列表
+        default-export-policy = "accept-route"      # 未命中出向策略时的默认动作
+
+# RPKI 服务器列表，用于路由源验证 ROA
+[[rpki-servers]]
+    # 单个 RPKI 缓存服务器
+    [rpki-servers.config]
+        address = "210.173.170.254"                 # RPKI 缓存服务器地址
+        port = 323                                  # RTR 协议端口，默认 323
+
+# BMP 服务器列表，把 BGP 会话和路由监控信息导出给采集端
+[[bmp-servers]]
+    # 单个 BMP 采集服务器
+    [bmp-servers.config]
+        address = "127.0.0.1"                       # BMP 采集服务器地址
+        port = 11019                                # BMP 端口
+        route-monitoring-policy = "pre-policy"      # 路由监控时机：pre-policy、post-policy、both、local-rib
+        statistics-timeout = 3600                   # 统计报文发送间隔，单位秒
+
+# VRF 列表，用于 VPN/多租户路由隔离
+[[vrfs]]
+    # 单个 VRF
+    [vrfs.config]
+        name = "vrf1"                               # VRF 名称
+        id = 1                                      # VRF 数字 ID，省略时由 gobgpd 自动分配
+        rd = "65000:100"                            # Route Distinguisher
+        both-rt-list = ["65000:100"]                # 同时作为导入和导出 RT；单独写 import-rt-list / export-rt-list 时优先级更高
+
+# MRT dump 列表，把 BGP 报文或表项落到文件
+[[mrt-dump]]
+    # 单个 MRT dump 任务
+    [mrt-dump.config]
+        dump-type = "updates"                       # dump 类型：updates 为 UPDATE 报文，table 为路由表
+        file-name = "/tmp/log/2006/01/02.1504.dump" # 输出文件路径，可用时间格式占位符
+        dump-interval = 180                         # 落盘间隔，单位秒
+
+# 对接 Zebra / FRR / Quagga，把路由写入内核或从中重分发
+[zebra]
+    # Zebra 对接参数
+    [zebra.config]
+        enabled = true                              # 是否启用 Zebra 对接
+        url = "unix:/var/run/quagga/zserv.api"      # Zebra API 套接字
+        redistribute-route-type-list = ["connect"]  # 从 Zebra 重分发的路由类型，如 connect、static、kernel
+        version = 2                                 # Zebra 协议版本，Ubuntu 16.04 上 Quagga 为 2
+
+# 静态邻居，逐个声明对端
+[[neighbors]]
+    # 邻居基础会话参数
+    [neighbors.config]
+        peer-as = 2                                 # 对端 AS 号，设为 0 可关闭对端 AS 校验
+        auth-password = "password"                  # TCP MD5 认证密码
+        neighbor-address = "192.168.10.2"           # 对端邻居地址
+        local-as = 1000                             # 本会话本地 AS，覆盖 global.config.as
+        remove-private-as = "all"                   # 通告前剥离私有 AS：all 或 replace
+        # peer-group = "my-peer-group"              # 若走 peer-group，取消注释，公共属性写在组里
+        # send-software-version = true              # 强制发送 Software Version Capability，默认关闭
+    # AS_PATH 处理选项
+    [neighbors.as-path-options.config]
+        allow-own-as = 1                            # AS_PATH 中允许出现本 AS 的次数
+        replace-peer-as = true                      # 把对端 AS 替换成本 AS
+    # BGP 定时器
+    [neighbors.timers.config]
+        connect-retry = 5                           # 连接重试间隔，单位秒
+        hold-time = 9                               # Hold Time，单位秒
+        keepalive-interval = 3                      # Keepalive 间隔，单位秒
+    # TCP 传输参数
+    [neighbors.transport.config]
+        passive-mode = true                         # 只接受对端连接，不主动拨号
+        local-address = "192.168.10.1"              # 本端源地址
+        remote-port = 2016                          # 对端 BGP 端口
+        ip-tos = 192                                # IP TOS，192 为 DSCP CS6
+    # 多跳 eBGP；直连邻居应设 false，否则 hold-time 后会话会被删；与 ttl-security 互斥
+    [neighbors.ebgp-multihop.config]
+        enabled = true                              # 是否启用多跳
+        multihop-ttl = 100                          # 多跳 TTL
+    # 路由反射器
+    [neighbors.route-reflector.config]
+        route-reflector-client = true               # 将该邻居作为 RR Client
+        route-reflector-cluster-id = "192.168.0.1"  # RR Cluster ID
+    # Add-Paths，向对端发送/接收同一前缀的多条路径
+    [neighbors.add-paths.config]
+        send-max = 8                                # 向对端发送的附加路径条数上限
+        receive = true                              # 是否接收对端 Add-Paths
+    # Graceful Restart
+    [neighbors.graceful-restart.config]
+        enabled = true                              # 启用 Graceful Restart
+        notification-enabled = true                 # 允许 GR 期间发送 Notification
+        long-lived-enabled = true                   # 启用 Long-Lived Graceful Restart
+        restart-time = 20                           # GR 重启时间，单位秒
+    # 该邻居启用的地址族，未列出的 AFI/SAFI 不会协商
+    [[neighbors.afi-safis]]
+        # 地址族名称
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv4-unicast"          # IPv4 单播
+        # 该地址族前缀数量限制
+        [neighbors.afi-safis.prefix-limit.config]
+           max-prefixes = 1000                      # 该地址族前缀上限
+           shutdown-threshold-pct = 80              # 达到上限百分比时告警或关会话
+        # 该地址族多协议 Graceful Restart
+        [neighbors.afi-safis.mp-graceful-restart.config]
+           enabled = true                           # 该地址族启用多协议 GR
+        # 该地址族 Long-Lived Graceful Restart
+        [neighbors.afi-safis.long-lived-graceful-restart.config]
+           enabled = true                           # 该地址族启用 LLGR
+           restart-time = 100000                    # LLGR 重启时间，单位秒
+        # 该地址族 Add-Paths，覆盖邻居级 add-paths
+        [neighbors.afi-safis.add-paths.config]
+           receive = true                           # 是否接收对端 Add-Paths
+           send-max = 8                             # 向对端发送的附加路径条数上限
+    # IPv6 单播地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv6-unicast"          # IPv6 单播
+    # IPv4 带标签单播地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv4-labelled-unicast" # IPv4 带标签单播
+    # IPv6 带标签单播地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv6-labelled-unicast" # IPv6 带标签单播
+    # L3VPN IPv4 单播地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "l3vpn-ipv4-unicast"    # L3VPN IPv4 单播
+    # L3VPN IPv6 单播地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "l3vpn-ipv6-unicast"    # L3VPN IPv6 单播
+    # EVPN 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "l2vpn-evpn"            # EVPN
+    # VPLS 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "l2vpn-vpls"            # VPLS
+    # Route Target Constraint 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "rtc"                   # Route Target Constraint
+    # IPv4 Encapsulation 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv4-encap"            # IPv4 Encapsulation
+    # IPv6 Encapsulation 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv6-encap"            # IPv6 Encapsulation
+    # IPv4 Flowspec 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv4-flowspec"         # IPv4 Flowspec
+    # IPv6 Flowspec 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv6-flowspec"         # IPv6 Flowspec
+    # IPv4 MUP 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv4-mup"              # IPv4 MUP
+    # IPv6 MUP 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "ipv6-mup"              # IPv6 MUP
+    # Opaque 地址族
+    [[neighbors.afi-safis]]
+        [neighbors.afi-safis.config]
+            afi-safi-name = "opaque"                # Opaque
+    # 该邻居入向/出向策略，覆盖全局 apply-policy
+    [neighbors.apply-policy.config]
+        import-policy-list = ["policy1"]            # 该邻居入向策略
+        default-import-policy = "reject-route"      # 未命中入向策略时的默认动作
+        export-policy-list = ["policy2"]            # 该邻居出向策略
+        default-export-policy = "accept-route"      # 未命中出向策略时的默认动作
+    # Route Server
+    [neighbors.route-server.config]
+        route-server-client = true                  # 将该邻居作为 Route Server Client
+    # TTL Security 与 ebgp-multihop 互斥，需要时取消下面注释
+    # [neighbors.ttl-security.config]
+    #     enabled = true                            # 启用 TTL Security
+    #     ttl-min = 255                             # 255 表示直连
+
+# 引用 peer-group 的邻居，公共属性写在组里，这里只写地址
+[[neighbors]]
+    # 邻居基础会话参数
+    [neighbors.config]
+        peer-group = "my-peer-group"                # 所属 peer-group 名称
+        neighbor-address = "127.0.0.2"              # 对端地址
+
+# Peer Group 列表，给一组邻居复用相同属性
+[[peer-groups]]
+  # Peer Group 基础参数
+  [peer-groups.config]
+    peer-group-name = "my-peer-group"               # 组名，邻居用 peer-group 引用
+    peer-as = 65000                                 # 组内默认对端 AS
+    send-software-version = true                    # 发送 Software Version Capability
+  # 组内启用的地址族
+  [[peer-groups.afi-safis]]
+    # 组内地址族名称
+    [peer-groups.afi-safis.config]
+      afi-safi-name = "ipv4-unicast"                # 组内默认地址族
+
+# 动态邻居，源地址落在前缀内的连接自动建邻并套用 peer-group
+[[dynamic-neighbors]]
+  # 动态邻居匹配规则
+  [dynamic-neighbors.config]
+    prefix = "20.0.0.0/24"                          # 允许自动建邻的对端前缀
+    peer-group = "my-peer-group"                    # 自动套用的 peer-group
+
+# 前缀集合，供策略条件 match-prefix-set 引用
+[[defined-sets.prefix-sets]]
+    prefix-set-name = "ps0"                         # 前缀集合名称
+    # 集合内的一条前缀规则
+    [[defined-sets.prefix-sets.prefix-list]]
+        ip-prefix = "10.0.0.0/8"                    # 匹配的 IP 前缀
+        masklength-range = "24..32"                 # 掩码长度范围，含两端
+# 邻居集合，供策略条件 match-neighbor-set 引用
+[[defined-sets.neighbor-sets]]
+   neighbor-set-name = "ns0"                        # 邻居集合名称
+   neighbor-info-list = ["192.168.10.2", "172.13.0.0/24"]  # 邻居地址或前缀列表
+# 标准 Community 集合
+[[defined-sets.bgp-defined-sets.community-sets]]
+    community-set-name = "cs0"                      # 标准 Community 集合名称
+    community-list = ["100:100"]                    # Community 列表，格式 ASN:VALUE
+# 扩展 Community 集合
+[[defined-sets.bgp-defined-sets.ext-community-sets]]
+    ext-community-set-name = "es0"                  # 扩展 Community 集合名称
+    ext-community-list = ["rt:100:100", "soo:200:200"]  # 扩展 Community 列表，如 rt:、soo:
+# AS_PATH 集合
+[[defined-sets.bgp-defined-sets.as-path-sets]]
+    as-path-set-name = "as0"                        # AS_PATH 集合名称
+    as-path-list = ["^100", "200$"]                 # AS_PATH 正则，^100 表示以 100 开头，200$ 表示以 200 结尾
+# Large Community 集合
+[[defined-sets.bgp-defined-sets.large-community-sets]]
+    large-community-set-name = "ls0"                # Large Community 集合名称
+    large-community-list = ["100:100:100", "200:200:200"]  # Large Community 列表，格式 Global:Local1:Local2
+
+# 策略定义，由 apply-policy 的 import/export 列表引用
+[[policy-definitions]]
+    name = "policy1"                                # 策略名，对应 import-policy-list / export-policy-list
+    # 策略语句：条件全部命中后执行动作
+    [[policy-definitions.statements]]
+        # 匹配前缀集合
+        [policy-definitions.statements.conditions.match-prefix-set]
+            prefix-set = "ps0"                      # 引用的前缀集合名
+            match-set-options = "any"               # 匹配方式：any 任一命中，all 全部命中，invert 取反
+        # 匹配邻居集合
+        [policy-definitions.statements.conditions.match-neighbor-set]
+            neighbor-set = "ns0"                    # 引用的邻居集合名
+            match-set-options = "invert"            # 取反，即邻居不在 ns0 中
+        # 匹配标准 Community 集合
+        [policy-definitions.statements.conditions.bgp-conditions.match-community-set]
+            community-set = "cs0"                   # 引用的 Community 集合名
+            match-set-options = "all"               # 须全部命中
+        # 匹配 Large Community 集合
+        [policy-definitions.statements.conditions.bgp-conditions.match-large-community-set]
+            large-community-set = "ls0"             # 引用的 Large Community 集合名
+            match-set-options = "all"               # 须全部命中
+        # 预置 AS_PATH
+        [policy-definitions.statements.actions.bgp-actions.set-as-path-prepend]
+            as = "last-as"                          # 预置 AS，可写具体 ASN，last-as 表示重复最右侧 AS
+            repeat-n = 5                            # 重复次数
+        # 路由处置
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"      # 命中后放行
+    # 第二条语句：匹配扩展 Community 则拒绝
+    [[policy-definitions.statements]]
+        # 匹配扩展 Community 集合
+        [policy-definitions.statements.conditions.bgp-conditions.match-ext-community-set]
+            ext-community-set = "es0"               # 引用的扩展 Community 集合名
+        [policy-definitions.statements.actions]
+            route-disposition = "reject-route"      # 命中后拒绝
+
+# 按 AS_PATH 匹配并追加 Community
+[[policy-definitions]]
+    name = "policy2"
+    [[policy-definitions.statements]]
+        # 匹配 AS_PATH 集合
+        [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]
+            as-path-set = "as0"                     # 引用的 AS_PATH 集合名
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"      # 命中后放行
+        # 修改标准 Community
+        [policy-definitions.statements.actions.bgp-actions.set-community]
+            options = "add"                         # add 追加，replace 替换，remove 删除
+            # 要写入的 Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]
+                communities-list = ["100:200"]
+
+# 组合匹配：AS_PATH、前缀、邻居、下一跳，并改写扩展 Community
+[[policy-definitions]]
+    name = "policy3"
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.conditions.bgp-conditions.match-as-path-set]
+            as-path-set = "as0"                     # 引用的 AS_PATH 集合名
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+        [policy-definitions.statements.actions.bgp-actions.set-community]
+            options = "add"                         # 追加标准 Community
+            # 要写入的 Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-community.set-community-method]
+                communities-list = ["100:200"]
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.conditions.match-prefix-set]
+            prefix-set = "ps0"
+            match-set-options = "invert"            # 前缀不在 ps0 中
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+        # 修改扩展 Community
+        [policy-definitions.statements.actions.bgp-actions.set-ext-community]
+            options = "replace"                     # 替换扩展 Community
+            # 要写入的扩展 Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-ext-community.set-ext-community-method]
+                communities-list = ["soo:100:200", "rt:300:400"]
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.conditions.match-neighbor-set]
+            neighbor-set = "ns0"
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+        [policy-definitions.statements.actions.bgp-actions.set-ext-community]
+            options = "remove"                      # 删除列出的扩展 Community
+            # 要写入的扩展 Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-ext-community.set-ext-community-method]
+                communities-list = ["soo:500:600", "rt:700:800"]
+    [[policy-definitions.statements]]
+        # 按下一跳匹配
+        [policy-definitions.statements.conditions.bgp-conditions]
+            next-hop-in-list = [                    # 下一跳落在该列表中
+               "10.0.100.1"
+            ]
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+
+# 按路由来源类型匹配
+[[policy-definitions]]
+    name = "route-type-policy"
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.conditions.bgp-conditions]
+            route-type = "local"                    # 本机生成的路由
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.conditions.bgp-conditions]
+            route-type = "internal"                 # 来自 iBGP 邻居的路由
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.conditions.bgp-conditions]
+            route-type = "external"                 # 来自 eBGP 邻居的路由
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+
+# 修改 Large Community
+[[policy-definitions]]
+    name = "large-communty-policy"
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+        # 修改 Large Community
+        [policy-definitions.statements.actions.bgp-actions.set-large-community]
+            options = "add"                         # 追加 Large Community
+            # 要写入的 Large Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-large-community.set-large-community-method]
+                communities-list = ["100:200:300"]
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+        [policy-definitions.statements.actions.bgp-actions.set-large-community]
+            options = "replace"                     # 替换为指定 Large Community
+            # 要写入的 Large Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-large-community.set-large-community-method]
+                communities-list = ["100:200:300"]
+    [[policy-definitions.statements]]
+        [policy-definitions.statements.actions]
+            route-disposition = "accept-route"
+        [policy-definitions.statements.actions.bgp-actions.set-large-community]
+            options = "remove"                      # 删除指定 Large Community，支持正则
+            # 要写入的 Large Community 列表
+            [policy-definitions.statements.actions.bgp-actions.set-large-community.set-large-community-method]
+                communities-list = ["100:200:300", "^200:"]

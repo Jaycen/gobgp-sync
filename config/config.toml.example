@@ -1,0 +1,64 @@
+# 全局：国家同步范围、周期、日志
+[global]
+    # IP协议版本: ipv4, ipv6, dual (默认: dual)
+    ip_version = "dual"
+
+    # 国家代码，多个用逗号或数组: CN, JP, US；也可 ALL / NONECN
+    country_code = "CN"
+    # country_code = "CN,JP"
+    # country_code = ["CN", "JP"]
+
+    # 同步周期 (默认每天 02:00)
+    # sync_time = "02:00"              # 每天（默认）
+    # sync_time = "3d 02:00"           # 每 3 天
+    # sync_time = "2w 02:00"           # 每 2 周
+    # sync_time = "1w Mon-Fri 02:00"   # 每周一到周五
+    # sync_time = "1m 02:00"           # 每月同一天
+    # sync_time = "1m 1-5 02:00"       # 每月 1–5 号
+    sync_time = "02:00"
+
+    # 团体字 ASN 半部，生成 ASN:ISO3166数字码（默认 3166，例 CN → 3166:156）
+    # community_asn = "3166"
+
+    # 并发添加/删除路由任务数 (默认: 100)
+    # concurrency = 100
+
+    # 日志文件（默认: logs/gobgp_sync.log）
+    # log_file = "logs/gobgp_sync.log"
+
+    # 快照目录（默认: snapshot）
+    # snapshot_dir = "snapshot"
+
+# GoBGP 注入侧（会话仍在 gobgpd.conf）
+[gobgp]
+    # GoBGP 原生配置文件（默认: config/gobgpd.conf）
+    # config = "config/gobgpd.conf"
+
+    # gRPC API（默认: 127.0.0.1:50051）；启动 gobgpd 时会传入 --api-hosts
+    # api_host = "127.0.0.1"
+    # api_port = 50051
+
+    # 注入路由下一跳（默认: 0.0.0.0 / ::）
+    # nexthop_ipv4 = "0.0.0.0"
+    # nexthop_ipv6 = "::"
+
+# 按国家简写覆盖下一跳（可选；未配置时用 nexthop_*）
+# [gobgp.community_nexthop_ipv4]
+#     CN = "198.19.0.254"
+# [gobgp.community_nexthop_ipv6]
+#     CN = "2001:db8::fe"
+
+# 国家 CIDR CSV 数据源（默认 sapics/ip-location-db user-country）
+# 换镜像或其它兼容「cidr,country」CSV 时只改这里
+[geo]
+    # ipv4_url = "https://github.com/sapics/ip-location-db/releases/download/latest/user-country-ipv4-cidr.csv"
+    # ipv6_url = "https://github.com/sapics/ip-location-db/releases/download/latest/user-country-ipv6-cidr.csv"
+
+# DNS → BGP（可选）
+# domains 文件不存在：不解析、不改 DNS 路由
+# 文件存在但为空：撤掉此前 DNS 路由
+[dns]
+    # domains_file = "config/domains.txt"
+    # interval = "10m"                          # 默认 10m；支持 30s / 10m / 1h
+    # servers = "223.5.5.5,119.29.29.29"         # 默认阿里/DNSPod；也可用数组
+    # servers = ["223.5.5.5", "119.29.29.29"]

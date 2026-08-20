@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.users.gobgp-sync</string>
+
+    <key>WorkingDirectory</key>
+    <string>__PREFIX__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__EXE__</string>
+        <string>-c</string>
+        <string>config/config.toml</string>
+        <string>--gobgpd-config</string>
+        <string>config/gobgpd.conf</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+        <string>Background</string>
+        <string>LoginWindow</string>
+        <string>StandardIO</string>
+        <string>System</string>
+    </array>
+</dict>
+</plist>

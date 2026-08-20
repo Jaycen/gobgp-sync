@@ -1,0 +1,14 @@
+[global]
+    ip_version = "ipv4"
+    country_code = "CN"
+    sync_time = "03:00"
+    community_asn = "3166"
+    log_file = "logs/gobgp_sync.log"
+    snapshot_dir = "snapshot"
+
+[gobgp]
+    config = "config/gobgpd.conf"
+
+[dns]
+    domains_file = "config/domains.txt"
+    interval = "10m"

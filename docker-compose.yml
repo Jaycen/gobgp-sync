@@ -1,0 +1,20 @@
+# BGP 会话需要宿主机网络；Linux 上用 host。Docker Desktop (macOS) 的 host 网络不能真正通 BGP。
+services:
+  gobgp-sync:
+    image: gobgp-sync:latest
+    build:
+      context: .
+      args:
+        GOBGP_VERSION: latest
+    container_name: gobgp-sync
+    restart: unless-stopped
+    network_mode: host
+    working_dir: /etc/gobgp-sync
+    volumes:
+      - ./config:/etc/gobgp-sync/config
+      - gobgp-sync-logs:/etc/gobgp-sync/logs
+      - gobgp-sync-snapshot:/etc/gobgp-sync/snapshot
+
+volumes:
+  gobgp-sync-logs:
+  gobgp-sync-snapshot:

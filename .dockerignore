@@ -1,0 +1,7 @@
+target
+dist
+.cache
+.git
+.superpowers
+**/*.md
+.gitignore
