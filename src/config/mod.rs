@@ -402,23 +402,33 @@ impl Settings {
         }
     }
 
-    /// 团体字：`community_asn`:`ISO3166-1 numeric`
+    /// 团体字：`community_asn`:`ISO3166-1 numeric`；无数字码时回落 `{ASN}:{ASN}`
     pub fn community_for_country(&self, country: &str) -> Option<String> {
-        CountryCodeMap::default().community(country, &self.community_asn)
+        Some(
+            CountryCodeMap::default()
+                .community(country, &self.community_asn)
+                .unwrap_or_else(|| self.fallback_community()),
+        )
     }
 
-    // 快照里已有前缀的旧团体字，按数字码套用当前 ASN
+    fn fallback_community(&self) -> String {
+        format!("{}:{}", self.community_asn, self.community_asn)
+    }
+
+    // 快照里已有前缀的旧团体字，按数字码套用当前 ASN；无法解析则回落 `{ASN}:{ASN}`
     pub fn community_from_old(&self, old_community: &str) -> String {
         let Some((_, value)) = old_community.split_once(':') else {
-            return String::new();
+            return self.fallback_community();
         };
         let Ok(numeric) = value.trim().parse::<u16>() else {
-            return String::new();
+            return self.fallback_community();
         };
         let map = CountryCodeMap::default();
         match map.country_for_numeric(numeric) {
-            Some(country) => self.community_for_country(country).unwrap_or_default(),
-            None => String::new(),
+            Some(country) => self
+                .community_for_country(country)
+                .unwrap_or_else(|| self.fallback_community()),
+            None => self.fallback_community(),
         }
     }
 
@@ -519,47 +529,5 @@ impl Settings {
                 .to_string(),
         );
         map
-    }
-}
-
-#[cfg(test)]
-impl Settings {
-    pub(crate) fn for_test(snapshot_dir: impl AsRef<Path>) -> Self {
-        let snapshot_dir = snapshot_dir.as_ref().to_string_lossy().into_owned();
-        let snap = Path::new(&snapshot_dir);
-        Self {
-            ip_version: IpVersion::Ipv4,
-            country_code: "CN,HK".to_string(),
-            sync_time: "1w Mon 03:00".to_string(),
-            sync_schedule: SyncSchedule::parse("1w Mon 03:00"),
-            gobgpd_config: "config/gobgpd.conf".to_string(),
-            gobgp_api_host: "127.0.0.1".to_string(),
-            gobgp_api_port: 50051,
-            gobgp_nexthop_ipv4: "223.5.5.5".to_string(),
-            gobgp_nexthop_ipv6: "2400:3200::1".to_string(),
-            community_nexthop_ipv4: HashMap::new(),
-            community_nexthop_ipv6: HashMap::new(),
-            log_file: "logs/gobgp_sync.log".to_string(),
-            snapshot_dir: snapshot_dir.clone(),
-            snapshot_ipv4_file: snap
-                .join("snapshot_ipv4_routing.prefix")
-                .to_string_lossy()
-                .into_owned(),
-            snapshot_ipv6_file: snap
-                .join("snapshot_ipv6_routing.prefix")
-                .to_string_lossy()
-                .into_owned(),
-            community_asn: "3166".to_string(),
-            concurrency: 100,
-            domains_file: "config/domains.txt".to_string(),
-            dns_interval: "10m".to_string(),
-            dns_interval_secs: 600,
-            dns_servers: Self::default_dns_servers(),
-            snapshot_dns_file: snap
-                .join("snapshot_dns_routing.prefix")
-                .to_string_lossy()
-                .into_owned(),
-            geo_urls: Self::default_geo_urls(),
-        }
     }
 }

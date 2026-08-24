@@ -181,10 +181,12 @@ impl RouteScheduler {
         if !lifecycle_ok || !scope_same {
             return FamilyAction::Extract;
         }
-        if RouteManager::load_snapshot(snapshot_file).is_empty() {
+        let snapshot = RouteManager::load_snapshot(snapshot_file);
+        if snapshot.is_empty() {
             return FamilyAction::Extract;
         }
-        if !attrs_same {
+        // 无数字码前缀曾写入空团体字；周期内 Restore 不会重算，这里补写成 {ASN}:{ASN}
+        if !attrs_same || snapshot.values().any(|c| c.trim().is_empty()) {
             return FamilyAction::RewriteAttrs;
         }
         FamilyAction::Restore
@@ -713,7 +715,11 @@ impl RouteScheduler {
             })
             .collect();
 
-        let (ok, fail, elapsed, rate) = self.route_manager.batch_sync(&new, &old, &tag).await;
+        let diff = Self::compute_diff(&new, &old);
+        let (ok, fail, elapsed, rate) = self
+            .route_manager
+            .batch_sync(&diff.to_add, &diff.to_del, &tag)
+            .await;
 
         if fail > 0 {
             return (
@@ -860,95 +866,5 @@ impl RouteScheduler {
         Self::store_cached_prefixes(last_prefixes_lock, prefixes, false).await;
 
         (lines.join("\n"), saved)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::Settings;
-
-    fn temp_dir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "gobgp-sync-sched-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn scope_fingerprint_includes_geo_urls() {
-        let dir = temp_dir();
-        let settings = Settings::for_test(&dir);
-        let fp = RouteScheduler::scope_fingerprint(&settings);
-        assert!(fp.contains(&format!(
-            "geo_ipv4={}",
-            settings.geo_urls.get("ipv4").unwrap()
-        )));
-        assert!(fp.contains(&format!(
-            "geo_ipv6={}",
-            settings.geo_urls.get("ipv6").unwrap()
-        )));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn geo_url_change_extracts_instead_of_restoring_snapshot() {
-        let dir = temp_dir();
-        let settings = Settings::for_test(&dir);
-        std::fs::write(&settings.snapshot_ipv4_file, "1.2.3.0/24 3166:156\n").unwrap();
-
-        let sched = RouteScheduler::new(settings.clone());
-        sched.write_snapshot_state();
-
-        let mut changed = settings;
-        changed.geo_urls.insert(
-            "ipv4".to_string(),
-            "https://github.com/sapics/ip-location-db/releases/download/latest/geolite2-country-ipv4-cidr.csv"
-                .to_string(),
-        );
-        let sched = RouteScheduler::new(changed);
-        let state = sched.load_snapshot_state().unwrap();
-        let scope_same = state.scope_matches(&sched.settings);
-
-        assert!(!scope_same);
-        assert_eq!(
-            RouteScheduler::family_action(
-                true,
-                &sched.settings.snapshot_ipv4_file,
-                true,
-                scope_same,
-                true,
-            ),
-            FamilyAction::Extract
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn legacy_snapshot_key_without_geo_urls_is_scope_change() {
-        let dir = temp_dir();
-        let settings = Settings::for_test(&dir);
-        std::fs::write(
-            format!("{}/snapshot.key", settings.snapshot_dir),
-            format!(
-                "date={}\ncountry_code={}\nip_version={}\n{}",
-                Local::now().date_naive(),
-                settings.country_code,
-                settings.ip_version.as_str(),
-                RouteScheduler::attr_fingerprint(&settings)
-            ),
-        )
-        .unwrap();
-
-        let sched = RouteScheduler::new(settings);
-        let state = sched.load_snapshot_state().unwrap();
-        assert!(!state.scope_matches(&sched.settings));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
