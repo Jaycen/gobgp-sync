@@ -41,9 +41,10 @@ async fn main() -> anyhow::Result<()> {
         settings.sync_schedule.describe()
     );
     log::info!(
-        "dns: domains_file={} interval={} servers={} ({})",
+        "dns: domains_file={} interval={} grace={} servers={} ({})",
         settings.domains_file,
         settings.dns_interval,
+        settings.dns_grace,
         settings.dns_servers.join(","),
         if std::path::Path::new(&settings.domains_file).is_file() {
             "present"

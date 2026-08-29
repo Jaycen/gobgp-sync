@@ -60,5 +60,6 @@
 [dns]
     # domains_file = "config/domains.txt"
     # interval = "10m"                          # 默认 10m；支持 30s / 10m / 1h
+    # grace = "6h"                               # 解析不到的旧地址保留多久再撤；支持 30m / 6h / 1d
     # servers = "223.5.5.5,119.29.29.29"         # 默认阿里/DNSPod；也可用数组
     # servers = ["223.5.5.5", "119.29.29.29"]

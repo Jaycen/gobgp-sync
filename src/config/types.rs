@@ -67,6 +67,8 @@ pub struct GeoConfig {
 pub struct DnsConfig {
     pub domains_file: Option<String>,
     pub interval: Option<String>,
+    /// Hold unseen resolved prefixes before withdraw, e.g. `6h` / `1d`
+    pub grace: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_string_list")]
     pub servers: Option<String>,
 }
@@ -95,6 +97,8 @@ pub struct Settings {
     pub domains_file: String,
     pub dns_interval: String,
     pub dns_interval_secs: u64,
+    pub dns_grace: String,
+    pub dns_grace_secs: u64,
     /// Upstream recursive DNS for A/AAAA (default: 223.5.5.5,119.29.29.29)
     pub dns_servers: Vec<String>,
     pub snapshot_dns_file: String,

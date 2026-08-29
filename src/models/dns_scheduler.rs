@@ -26,8 +26,9 @@ impl DnsScheduler {
 
     pub async fn run(&self) {
         log::info!(
-            "dns scheduler started (interval={}, file={})",
+            "dns scheduler started (interval={}, grace={}, file={})",
             self.settings.dns_interval,
+            self.settings.dns_grace,
             self.settings.domains_file
         );
         self.sync_once().await;
@@ -59,7 +60,8 @@ impl DnsScheduler {
             DnsSnapshot::new()
         } else {
             log::info!("dns: syncing {} domain(s)", domains.len());
-            self.dns.resolve_all(&domains).await
+            let lookups = self.dns.resolve_all(&domains).await;
+            DnsManager::apply_grace(&old, &lookups, &domains, self.settings.dns_grace_secs)
         };
 
         let DnsDiff { to_add, to_del } = DnsManager::diff(&old, &new);

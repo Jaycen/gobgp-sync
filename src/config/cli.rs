@@ -152,6 +152,12 @@ pub struct CliArgs {
     pub dns_interval: Option<String>,
 
     #[arg(
+        long = "dns-grace",
+        help = "Keep stale DNS prefixes this long after last seen, e.g. 6h, 1d (default: 6h)"
+    )]
+    pub dns_grace: Option<String>,
+
+    #[arg(
         long = "dns-servers",
         help = "Upstream DNS servers, comma-separated (default: 223.5.5.5,119.29.29.29)"
     )]

@@ -34,6 +34,8 @@ impl Settings {
             domains_file: "config/domains.txt".to_string(),
             dns_interval: "10m".to_string(),
             dns_interval_secs: 600,
+            dns_grace: "6h".to_string(),
+            dns_grace_secs: 6 * 3600,
             dns_servers: Self::default_dns_servers(),
             snapshot_ipv4_file: String::new(),
             snapshot_ipv6_file: String::new(),
@@ -116,6 +118,9 @@ impl Settings {
                 if let Some(v) = Self::nonempty(d.interval) {
                     config.dns_interval = v;
                 }
+                if let Some(v) = Self::nonempty(d.grace) {
+                    config.dns_grace = v;
+                }
                 if let Some(v) = Self::nonempty(d.servers) {
                     config.dns_servers = Self::parse_dns_servers(&v);
                 }
@@ -188,6 +193,9 @@ impl Settings {
         if let Some(v) = Self::nonempty_str(args.dns_interval.as_deref()) {
             config.dns_interval = v;
         }
+        if let Some(v) = Self::nonempty_str(args.dns_grace.as_deref()) {
+            config.dns_grace = v;
+        }
         if let Some(v) = Self::nonempty_str(args.dns_servers.as_deref()) {
             config.dns_servers = Self::parse_dns_servers(&v);
         }
@@ -195,6 +203,7 @@ impl Settings {
         config.validate_country_code();
         config.sync_schedule = SyncSchedule::parse(&config.sync_time);
         config.dns_interval_secs = Self::parse_dns_interval(&config.dns_interval);
+        config.dns_grace_secs = Self::parse_dns_grace(&config.dns_grace);
         if config.dns_servers.is_empty() {
             log::warn!("no valid dns_servers, using 223.5.5.5,119.29.29.29");
             config.dns_servers = Self::default_dns_servers();
@@ -251,6 +260,41 @@ impl Settings {
             _ => 600,
         };
         secs.max(1)
+    }
+
+    /// Parse `6h` / `1d` / `30m` / `30s` / bare seconds. Invalid → 6h.
+    pub fn parse_dns_grace(raw: &str) -> u64 {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            log::warn!("empty dns_grace, using 6h");
+            return 6 * 3600;
+        }
+        if let Ok(secs) = raw.parse::<u64>() {
+            return secs;
+        }
+        let (num, unit) = if let Some(n) = raw.strip_suffix(['s', 'S']) {
+            (n, 's')
+        } else if let Some(n) = raw.strip_suffix(['m', 'M']) {
+            (n, 'm')
+        } else if let Some(n) = raw.strip_suffix(['h', 'H']) {
+            (n, 'h')
+        } else if let Some(n) = raw.strip_suffix(['d', 'D']) {
+            (n, 'd')
+        } else {
+            log::warn!("invalid dns_grace: {}, using 6h", raw);
+            return 6 * 3600;
+        };
+        let Ok(n) = num.trim().parse::<u64>() else {
+            log::warn!("invalid dns_grace: {}, using 6h", raw);
+            return 6 * 3600;
+        };
+        match unit {
+            's' => n,
+            'm' => n.saturating_mul(60),
+            'h' => n.saturating_mul(3600),
+            'd' => n.saturating_mul(86400),
+            _ => 6 * 3600,
+        }
     }
 
     fn default_dns_servers() -> Vec<String> {

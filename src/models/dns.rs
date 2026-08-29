@@ -4,6 +4,7 @@ use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
+use chrono::{DateTime, Local, NaiveDateTime};
 use hickory_resolver::config::{NameServerConfig, ResolverConfig};
 use hickory_resolver::net::runtime::TokioRuntimeProvider;
 use hickory_resolver::proto::rr::RecordType;
@@ -13,15 +14,30 @@ use crate::config::{IpVersion, Settings};
 use crate::models::geo::PrefixExtractor;
 
 pub const DNS_COMMUNITY: &str = "65535:65535";
+const LAST_SEEN_FMT: &str = "%Y-%m-%dT%H:%M:%S";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DomainRecords {
-    pub ipv4: BTreeSet<String>,
-    pub ipv6: BTreeSet<String>,
+    pub ipv4: BTreeMap<String, DateTime<Local>>,
+    pub ipv6: BTreeMap<String, DateTime<Local>>,
 }
 
-/// Domain → resolved host routes (/32 or /128).
+/// Domain → resolved host routes (/32 or /128) with last-seen time.
 pub type DnsSnapshot = BTreeMap<String, DomainRecords>;
+
+#[derive(Debug, Clone)]
+pub enum LookupFamily {
+    Skipped,
+    /// Lookup failed or returned no addresses.
+    Miss,
+    Hit(BTreeSet<String>),
+}
+
+#[derive(Debug, Clone)]
+pub struct DomainLookup {
+    pub ipv4: LookupFamily,
+    pub ipv6: LookupFamily,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct DnsDiff {
@@ -92,7 +108,8 @@ impl DnsManager {
         Some(domains)
     }
 
-    /// 每行: `前缀 团体字 域名`（与 snapshot_ipv4_routing.prefix 同类；域名便于对照）
+    /// 每行: `前缀 团体字 域名 [last_seen]`
+    /// 无时间戳的旧快照按「刚刚看到」处理，给满一个宽限期。
     pub fn load_snapshot(path: &str) -> DnsSnapshot {
         let path = Path::new(path);
         if !path.exists() {
@@ -106,6 +123,7 @@ impl DnsManager {
             }
         };
 
+        let now = Local::now();
         let mut out = DnsSnapshot::new();
         for line in content.lines() {
             let line = line.trim();
@@ -125,17 +143,18 @@ impl DnsManager {
                 .map(|d| d.trim_end_matches('.').to_lowercase())
                 .filter(|d| !d.is_empty())
                 .unwrap_or_else(|| "_".to_string());
+            let last_seen = parts.get(3).and_then(|s| parse_last_seen(s)).unwrap_or(now);
             let rec = out.entry(domain).or_default();
             if prefix.contains(':') {
-                rec.ipv6.insert(prefix.to_string());
+                rec.ipv6.insert(prefix.to_string(), last_seen);
             } else {
-                rec.ipv4.insert(prefix.to_string());
+                rec.ipv4.insert(prefix.to_string(), last_seen);
             }
         }
         out
     }
 
-    /// 每行: `前缀 团体字 域名`，按前缀排序
+    /// 每行: `前缀 团体字 域名 last_seen`，按前缀排序
     pub fn save_snapshot(snapshot: &DnsSnapshot, path: &str) -> anyhow::Result<()> {
         if let Some(parent) = Path::new(path).parent() {
             if !parent.as_os_str().is_empty() {
@@ -143,17 +162,25 @@ impl DnsManager {
             }
         }
 
-        let mut lines: Vec<(String, String)> = Vec::new();
+        let mut lines: Vec<(String, String, DateTime<Local>)> = Vec::new();
         for (domain, rec) in snapshot {
-            for prefix in rec.ipv4.iter().chain(rec.ipv6.iter()) {
-                lines.push((prefix.clone(), domain.clone()));
+            for (prefix, seen) in rec.ipv4.iter().chain(rec.ipv6.iter()) {
+                lines.push((prefix.clone(), domain.clone(), *seen));
             }
         }
         lines.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
         let content = lines
             .into_iter()
-            .map(|(prefix, domain)| format!("{} {} {}", prefix, DNS_COMMUNITY, domain))
+            .map(|(prefix, domain, seen)| {
+                format!(
+                    "{} {} {} {}",
+                    prefix,
+                    DNS_COMMUNITY,
+                    domain,
+                    seen.format(LAST_SEEN_FMT)
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         fs::write(path, content)?;
@@ -164,8 +191,8 @@ impl DnsManager {
     pub fn flatten(snapshot: &DnsSnapshot) -> HashSet<String> {
         let mut out = HashSet::new();
         for rec in snapshot.values() {
-            out.extend(rec.ipv4.iter().cloned());
-            out.extend(rec.ipv6.iter().cloned());
+            out.extend(rec.ipv4.keys().cloned());
+            out.extend(rec.ipv6.keys().cloned());
         }
         out
     }
@@ -192,8 +219,60 @@ impl DnsManager {
         DnsDiff { to_add, to_del }
     }
 
-    pub async fn resolve_all(&self, domains: &[String]) -> DnsSnapshot {
+    /// Merge this round's lookups with the previous snapshot.
+    /// Domains not in `domains` are dropped (immediate withdraw).
+    pub fn apply_grace(
+        old: &DnsSnapshot,
+        lookups: &BTreeMap<String, DomainLookup>,
+        domains: &[String],
+        grace_secs: u64,
+    ) -> DnsSnapshot {
+        let now = Local::now();
         let mut out = DnsSnapshot::new();
+        let mut held = 0u32;
+        let mut expired = 0u32;
+
+        for domain in domains {
+            let lookup = lookups.get(domain);
+            let old_rec = old.get(domain);
+            let mut rec = DomainRecords::default();
+            let miss = LookupFamily::Miss;
+            merge_family(
+                &mut rec.ipv4,
+                old_rec.map(|r| &r.ipv4),
+                lookup.map(|l| &l.ipv4).unwrap_or(&miss),
+                now,
+                grace_secs,
+                &mut held,
+                &mut expired,
+            );
+            merge_family(
+                &mut rec.ipv6,
+                old_rec.map(|r| &r.ipv6),
+                lookup.map(|l| &l.ipv6).unwrap_or(&miss),
+                now,
+                grace_secs,
+                &mut held,
+                &mut expired,
+            );
+            if !rec.ipv4.is_empty() || !rec.ipv6.is_empty() {
+                out.insert(domain.clone(), rec);
+            }
+        }
+
+        if held > 0 || expired > 0 {
+            log::info!(
+                "dns: grace hold={} expire={} window={}s",
+                held,
+                expired,
+                grace_secs
+            );
+        }
+        out
+    }
+
+    pub async fn resolve_all(&self, domains: &[String]) -> BTreeMap<String, DomainLookup> {
+        let mut out = BTreeMap::new();
         for domain in domains {
             let rec = self.resolve_one(domain).await;
             out.insert(domain.clone(), rec);
@@ -201,42 +280,30 @@ impl DnsManager {
         out
     }
 
-    async fn resolve_one(&self, domain: &str) -> DomainRecords {
-        let mut rec = DomainRecords::default();
+    async fn resolve_one(&self, domain: &str) -> DomainLookup {
         let want_v4 = self.settings.ip_version.should_process_ipv4();
         let want_v6 = self.settings.ip_version.should_process_ipv6();
 
-        if want_v4 {
-            match self.resolver.lookup(domain, RecordType::A).await {
-                Ok(lookup) => {
-                    for record in lookup.answers() {
-                        if let Some(std::net::IpAddr::V4(v4)) = record.data.ip_addr() {
-                            rec.ipv4.insert(format!("{v4}/32"));
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("DNS A lookup failed for {}: {}", domain, e);
-                }
-            }
-        }
+        let ipv4 = if want_v4 {
+            self.lookup_family(domain, RecordType::A, false).await
+        } else {
+            LookupFamily::Skipped
+        };
+        let ipv6 = if want_v6 {
+            self.lookup_family(domain, RecordType::AAAA, true).await
+        } else {
+            LookupFamily::Skipped
+        };
 
-        if want_v6 {
-            match self.resolver.lookup(domain, RecordType::AAAA).await {
-                Ok(lookup) => {
-                    for record in lookup.answers() {
-                        if let Some(std::net::IpAddr::V6(v6)) = record.data.ip_addr() {
-                            rec.ipv6.insert(format!("{v6}/128"));
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::warn!("DNS AAAA lookup failed for {}: {}", domain, e);
-                }
-            }
-        }
-
-        if rec.ipv4.is_empty() && rec.ipv6.is_empty() {
+        let v4_n = match &ipv4 {
+            LookupFamily::Hit(s) => s.len(),
+            _ => 0,
+        };
+        let v6_n = match &ipv6 {
+            LookupFamily::Hit(s) => s.len(),
+            _ => 0,
+        };
+        if v4_n == 0 && v6_n == 0 {
             log::info!(
                 "DNS: {} resolved to no {} addresses",
                 domain,
@@ -247,13 +314,99 @@ impl DnsManager {
                 }
             );
         } else {
-            log::info!(
-                "DNS: {} -> {} v4, {} v6",
-                domain,
-                rec.ipv4.len(),
-                rec.ipv6.len()
-            );
+            log::info!("DNS: {} -> {} v4, {} v6", domain, v4_n, v6_n);
         }
-        rec
+
+        DomainLookup { ipv4, ipv6 }
+    }
+
+    async fn lookup_family(&self, domain: &str, rtype: RecordType, ipv6: bool) -> LookupFamily {
+        match self.resolver.lookup(domain, rtype).await {
+            Ok(lookup) => {
+                let mut set = BTreeSet::new();
+                for record in lookup.answers() {
+                    match record.data.ip_addr() {
+                        Some(std::net::IpAddr::V4(v4)) if !ipv6 => {
+                            set.insert(format!("{v4}/32"));
+                        }
+                        Some(std::net::IpAddr::V6(v6)) if ipv6 => {
+                            set.insert(format!("{v6}/128"));
+                        }
+                        _ => {}
+                    }
+                }
+                if set.is_empty() {
+                    LookupFamily::Miss
+                } else {
+                    LookupFamily::Hit(set)
+                }
+            }
+            Err(e) => {
+                log::warn!(
+                    "DNS {} lookup failed for {}: {}",
+                    if ipv6 { "AAAA" } else { "A" },
+                    domain,
+                    e
+                );
+                LookupFamily::Miss
+            }
+        }
+    }
+}
+
+fn parse_last_seen(raw: &str) -> Option<DateTime<Local>> {
+    let naive = NaiveDateTime::parse_from_str(raw, LAST_SEEN_FMT).ok()?;
+    match naive.and_local_timezone(Local) {
+        chrono::LocalResult::Single(dt) => Some(dt),
+        chrono::LocalResult::Ambiguous(a, _) => Some(a),
+        chrono::LocalResult::None => None,
+    }
+}
+
+fn within_grace(last_seen: DateTime<Local>, now: DateTime<Local>, grace_secs: u64) -> bool {
+    now.signed_duration_since(last_seen).num_seconds() < grace_secs as i64
+}
+
+fn merge_family(
+    dest: &mut BTreeMap<String, DateTime<Local>>,
+    old: Option<&BTreeMap<String, DateTime<Local>>>,
+    lookup: &LookupFamily,
+    now: DateTime<Local>,
+    grace_secs: u64,
+    held: &mut u32,
+    expired: &mut u32,
+) {
+    match lookup {
+        LookupFamily::Skipped => {}
+        LookupFamily::Hit(live) => {
+            for prefix in live {
+                dest.insert(prefix.clone(), now);
+            }
+            if let Some(old) = old {
+                for (prefix, seen) in old {
+                    if live.contains(prefix) {
+                        continue;
+                    }
+                    if within_grace(*seen, now, grace_secs) {
+                        dest.insert(prefix.clone(), *seen);
+                        *held += 1;
+                    } else {
+                        *expired += 1;
+                    }
+                }
+            }
+        }
+        LookupFamily::Miss => {
+            if let Some(old) = old {
+                for (prefix, seen) in old {
+                    if within_grace(*seen, now, grace_secs) {
+                        dest.insert(prefix.clone(), *seen);
+                        *held += 1;
+                    } else {
+                        *expired += 1;
+                    }
+                }
+            }
+        }
     }
 }
